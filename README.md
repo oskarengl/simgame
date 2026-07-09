@@ -1,3 +1,5 @@
+<img width="1917" height="986" alt="github pic" src="https://github.com/user-attachments/assets/836d3c90-0334-4f33-b92a-583163d49457" />
+
 # Ecological Simulation Game
 
 A 2D top-down ecological simulation where different types of animals interact with trees, each other, and the environment.
