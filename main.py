@@ -42,7 +42,7 @@ class Entity:
         self.alive = True
     
     def distance_to(self, other: 'Entity') -> float:
-        return math.sqrt((self.x - other.x)**2 + (self.y - other.y)**2)
+        return math.hypot(self.x - other.x, self.y - other.y)
 
 class Tree(Entity):
     def __init__(self, x: float, y: float):
@@ -76,10 +76,13 @@ class Tree(Entity):
         fertilization_found = False
         
         # Check for seeds/poop nearby
+        x, y = self.x, self.y
+        r_sq = self.fertilization_radius * self.fertilization_radius
         for seed in seeds:
             if seed.alive:
-                dist = self.distance_to(seed)
-                if dist < self.fertilization_radius:
+                dx = seed.x - x
+                dy = seed.y - y
+                if dx*dx + dy*dy < r_sq:
                     # Seed will fertilize in its own update, but we note it's nearby
                     fertilization_found = True
                     self.last_fertilization = 0
@@ -89,8 +92,9 @@ class Tree(Entity):
         if not fertilization_found:
             for dead_tree in dead_trees:
                 if not dead_tree.alive:
-                    dist = self.distance_to(dead_tree)
-                    if dist < self.fertilization_radius:
+                    dx = dead_tree.x - x
+                    dy = dead_tree.y - y
+                    if dx*dx + dy*dy < r_sq:
                         self.last_fertilization = 0
                         fertilization_found = True
                         break
@@ -161,10 +165,13 @@ class Seed(Entity):
         
         # Seeds don't decay on their own, but can fertilize trees
         # Check if near a tree for fertilization
+        x, y = self.x, self.y
+        r_sq = self.fertilization_radius * self.fertilization_radius
         for tree in trees:
             if tree.alive:
-                dist = self.distance_to(tree)
-                if dist < self.fertilization_radius:
+                dx = tree.x - x
+                dy = tree.y - y
+                if dx*dx + dy*dy < r_sq:
                     # Fertilize the tree and disappear
                     tree.last_fertilization = 0  # Reset fertilization timer
                     self.alive = False
@@ -353,7 +360,7 @@ class Animal(Entity):
         
         # Check for stink from dead bodies (affects health) - optimized
         if spatial_grid:
-            nearby_bodies = spatial_grid.get_nearby(self.x, self.y, 60)  # Max stink radius
+            nearby_bodies = spatial_grid.get_nearby(self.x, self.y, 60, animals=False)  # Max stink radius
             nearby_bodies = [b for b in nearby_bodies if isinstance(b, DeadBody) and 
                            b.alive and not b.being_decomposed]
         else:
@@ -396,7 +403,8 @@ class Animal(Entity):
         # Check if herbivore is on a tree (for hiding from predators)
         if self.type == AnimalType.HERBIVORE:
             self.on_tree = False
-            for tree in trees:
+            crown_candidates = spatial_grid.tree_grid.query(self.x, self.y, 20) if spatial_grid else trees
+            for tree in crown_candidates:
                 if tree.alive:
                     dx = self.x - tree.x
                     dy = self.y - tree.y
@@ -614,7 +622,7 @@ class Animal(Entity):
                 if self.being_chased and not self.on_tree:
                     # Look for any nearby tree to hide in (extended range when chased)
                     if spatial_grid:
-                        nearby_trees = [t for t in trees if t.alive and 
+                        nearby_trees = [t for t in spatial_grid.tree_grid.query(self.x, self.y, self.view_range * 2) if
                                        (t.x - self.x)**2 + (t.y - self.y)**2 < (self.view_range * 2) ** 2]
                     else:
                         nearby_trees = [t for t in trees if t.alive]
@@ -629,7 +637,8 @@ class Animal(Entity):
                 else:
                     # Look for trees with fruits (optimized - only check nearby)
                     if spatial_grid:
-                        nearby_trees = [t for t in trees if t.alive and t.fruit_count > 0 and 
+                        nearby_trees = [t for t in spatial_grid.tree_grid.query(self.x, self.y, self.view_range) if
+                                       t.fruit_count > 0 and
                                        (t.x - self.x)**2 + (t.y - self.y)**2 < view_range_sq]
                     else:
                         nearby_trees = [t for t in trees if t.alive and t.fruit_count > 0]
@@ -645,7 +654,7 @@ class Animal(Entity):
             elif self.type == AnimalType.TREE_EATER:
                 # Look for trees (optimized)
                 if spatial_grid:
-                    nearby_trees = [t for t in trees if t.alive and 
+                    nearby_trees = [t for t in spatial_grid.tree_grid.query(self.x, self.y, self.view_range) if
                                    (t.x - self.x)**2 + (t.y - self.y)**2 < view_range_sq]
                 else:
                     nearby_trees = [t for t in trees if t.alive]
@@ -679,18 +688,8 @@ class Animal(Entity):
                 visible_animals = []
                 for a in nearby_animals:
                     if a.type == AnimalType.HERBIVORE:
-                        # Check if herbivore is on a tree
-                        is_on_tree = False
-                        for tree in trees:
-                            if tree.alive:
-                                dx = a.x - tree.x
-                                dy = a.y - tree.y
-                                dist_sq = dx*dx + dy*dy
-                                tree_crown_radius = tree.size / 2
-                                if dist_sq < tree_crown_radius * tree_crown_radius:
-                                    is_on_tree = True
-                                    break
-                        if not is_on_tree:  # Only add if not hiding in tree
+                        # Herbivores work out on_tree themselves each update
+                        if not a.on_tree:  # Only add if not hiding in tree
                             visible_animals.append(a)
                     else:
                         visible_animals.append(a)
@@ -739,18 +738,8 @@ class Animal(Entity):
                 visible_animals = []
                 for a in nearby_animals:
                     if a.type == AnimalType.HERBIVORE:
-                        # Check if herbivore is on a tree
-                        is_on_tree = False
-                        for tree in trees:
-                            if tree.alive:
-                                dx = a.x - tree.x
-                                dy = a.y - tree.y
-                                dist_sq = dx*dx + dy*dy
-                                tree_crown_radius = tree.size / 2
-                                if dist_sq < tree_crown_radius * tree_crown_radius:
-                                    is_on_tree = True
-                                    break
-                        if not is_on_tree:  # Only add if not hiding in tree
+                        # Herbivores work out on_tree themselves each update
+                        if not a.on_tree:  # Only add if not hiding in tree
                             visible_animals.append(a)
                     else:
                         visible_animals.append(a)
@@ -785,7 +774,7 @@ class Animal(Entity):
                 sniff_range_sq = self.sniff_range * self.sniff_range  # Use sniff_range for detection
                 if spatial_grid:
                     # Use sniff_range for initial detection
-                    nearby_entities = spatial_grid.get_nearby(self.x, self.y, self.sniff_range)
+                    nearby_entities = spatial_grid.get_nearby(self.x, self.y, self.sniff_range, animals=False)
                     nearby_bodies = [e for e in nearby_entities if isinstance(e, DeadBody) and e.alive]
                     nearby_seeds = [e for e in nearby_entities if isinstance(e, Seed) and e.alive]
                 else:
@@ -846,7 +835,8 @@ class Animal(Entity):
         # Check if herbivore is on a tree (for hiding from predators)
         self.on_tree = False
         if self.type == AnimalType.HERBIVORE:
-            for tree in trees:
+            crown_candidates = spatial_grid.tree_grid.query(self.x, self.y, 20) if spatial_grid else trees
+            for tree in crown_candidates:
                 if tree.alive:
                     dx = self.x - tree.x
                     dy = self.y - tree.y
@@ -877,7 +867,7 @@ class Animal(Entity):
             # Only check nearby trees
             nearby_trees = trees
             if spatial_grid:
-                nearby_trees = [t for t in trees if t.alive and 
+                nearby_trees = [t for t in spatial_grid.tree_grid.query(self.x, self.y, self.size + 20) if
                                (t.x - self.x)**2 + (t.y - self.y)**2 < (self.size + t.size/2)**2]
             else:
                 nearby_trees = [t for t in trees if t.alive]
@@ -917,8 +907,15 @@ class Animal(Entity):
                         break
         
         elif self.type == AnimalType.TREE_EATER:
-            for tree in trees:
-                if tree.alive and self.distance_to(tree) < self.size + tree.size/2:
+            x, y, size = self.x, self.y, self.size
+            eat_candidates = spatial_grid.tree_grid.query(x, y, size + 20) if spatial_grid else trees
+            for tree in eat_candidates:
+                if not tree.alive:
+                    continue
+                dx = tree.x - x
+                dy = tree.y - y
+                reach = size + tree.size/2
+                if dx*dx + dy*dy < reach * reach:
                     was_alive = tree.alive
                     tree.take_damage(0.5)
                     self.health = min(self.max_health, self.health + 0.3)
@@ -1053,7 +1050,7 @@ class Animal(Entity):
         elif self.type == AnimalType.DECOMPOSER:
             # Can eat dead bodies and seeds (optimized)
             if spatial_grid:
-                nearby_entities = spatial_grid.get_nearby(self.x, self.y, self.size + 20)
+                nearby_entities = spatial_grid.get_nearby(self.x, self.y, self.size + 20, animals=False)
                 nearby_bodies = [e for e in nearby_entities if isinstance(e, DeadBody) and e.alive]
                 nearby_seeds = [e for e in nearby_entities if isinstance(e, Seed) and e.alive]
             else:
@@ -1336,23 +1333,39 @@ class RiverSegment:
         else:
             self.flow_x = 0
             self.flow_y = 0
+        self.update_geometry()
+    
+    def update_geometry(self):
+        """Cache values contains_point needs. Call again after moving the endpoints."""
+        self.dx = self.x2 - self.x1
+        self.dy = self.y2 - self.y1
+        self.length_sq = self.dx*self.dx + self.dy*self.dy
+        half_w = self.width / 2
+        self.half_width_sq = half_w * half_w
+        self.min_x = min(self.x1, self.x2) - half_w
+        self.max_x = max(self.x1, self.x2) + half_w
+        self.min_y = min(self.y1, self.y2) - half_w
+        self.max_y = max(self.y1, self.y2) + half_w
     
     def contains_point(self, x: float, y: float) -> bool:
-        # Check if point is within the river segment
-        # Project point onto line segment
-        dx = self.x2 - self.x1
-        dy = self.y2 - self.y1
-        length_sq = dx*dx + dy*dy
-        
+        # Cheap reject: outside the segment's padded bounding box
+        if x < self.min_x or x > self.max_x or y < self.min_y or y > self.max_y:
+            return False
+        length_sq = self.length_sq
         if length_sq == 0:
             return False
         
-        t = max(0, min(1, ((x - self.x1) * dx + (y - self.y1) * dy) / length_sq))
-        proj_x = self.x1 + t * dx
-        proj_y = self.y1 + t * dy
-        
-        dist = math.sqrt((x - proj_x)**2 + (y - proj_y)**2)
-        return dist < self.width / 2
+        # Project point onto line segment
+        dx = self.dx
+        dy = self.dy
+        t = ((x - self.x1) * dx + (y - self.y1) * dy) / length_sq
+        if t < 0:
+            t = 0
+        elif t > 1:
+            t = 1
+        px = x - (self.x1 + t * dx)
+        py = y - (self.y1 + t * dy)
+        return px*px + py*py < self.half_width_sq
     
     def draw(self, screen: pygame.Surface):
         # Draw river as a thick line
@@ -1411,8 +1424,9 @@ class MudPuddle(Entity):
     
     def contains_point(self, x: float, y: float) -> bool:
         """Check if a point is inside the mud puddle"""
-        dist = math.sqrt((x - self.x)**2 + (y - self.y)**2)
-        return dist < self.radius
+        dx = x - self.x
+        dy = y - self.y
+        return dx*dx + dy*dy < self.radius * self.radius
     
     def overlaps_river(self, river_segments: List['RiverSegment']) -> bool:
         """Check if mud puddle overlaps with any river segment"""
@@ -1476,37 +1490,95 @@ class Wall:
 
 class SpatialGrid:
     """Simple spatial grid for efficient neighbor queries"""
+    # Queries search the 3x3 block of block_size cells around the point (that reach is
+    # part of how the game plays). Storage uses finer cells so small-radius queries only
+    # touch the few cells they need.
+    STORAGE_DIVISIONS = 4
+    
     def __init__(self, cell_size: int = 100):
-        self.cell_size = cell_size
-        self.grid: dict = {}
+        self.block_size = cell_size
+        self.cell_size = cell_size / self.STORAGE_DIVISIONS
+        self.grid: dict = {}   # animals
+        self.other: dict = {}  # dead bodies and seeds - kept apart so animal queries skip them
     
     def _get_key(self, x: float, y: float) -> tuple:
         return (int(x // self.cell_size), int(y // self.cell_size))
     
     def clear(self):
         self.grid.clear()
+        self.other.clear()
     
     def add(self, entity: Entity):
+        grid = self.grid if isinstance(entity, Animal) else self.other
         key = self._get_key(entity.x, entity.y)
-        if key not in self.grid:
-            self.grid[key] = []
-        self.grid[key].append(entity)
+        if key not in grid:
+            grid[key] = []
+        grid[key].append(entity)
     
-    def get_nearby(self, x: float, y: float, radius: float) -> List[Entity]:
-        """Get entities within radius"""
+    def get_nearby(self, x: float, y: float, radius: float, animals: bool = True) -> List[Entity]:
+        """Get animals (or, with animals=False, dead bodies and seeds) within radius"""
         nearby = []
-        # Check current cell and adjacent cells
-        center_key = self._get_key(x, y)
-        for dx in [-1, 0, 1]:
-            for dy in [-1, 0, 1]:
-                key = (center_key[0] + dx, center_key[1] + dy)
-                if key in self.grid:
-                    for entity in self.grid[key]:
+        append = nearby.append
+        grid = self.grid if animals else self.other
+        radius_sq = radius * radius
+        # Fine cells overlapping both the radius and the 3x3 block around the point
+        div = self.STORAGE_DIVISIONS
+        bx = int(x // self.block_size)
+        by = int(y // self.block_size)
+        cs = self.cell_size
+        x_lo = max(int((x - radius) // cs), (bx - 1) * div)
+        x_hi = min(int((x + radius) // cs), (bx + 2) * div - 1)
+        y_lo = max(int((y - radius) // cs), (by - 1) * div)
+        y_hi = min(int((y + radius) // cs), (by + 2) * div - 1)
+        for kx in range(x_lo, x_hi + 1):
+            for ky in range(y_lo, y_hi + 1):
+                cell = grid.get((kx, ky))
+                if cell:
+                    for entity in cell:
                         if entity.alive:
-                            dist_sq = (entity.x - x)**2 + (entity.y - y)**2
-                            if dist_sq <= radius * radius:
-                                nearby.append(entity)
+                            ex = entity.x - x
+                            ey = entity.y - y
+                            if ex*ex + ey*ey <= radius_sq:
+                                append(entity)
         return nearby
+
+class TreeGrid:
+    """Spatial index for trees, rebuilt once per tick (trees don't move).
+    query() returns candidate trees in their original list order, so code that
+    stops at the first match picks the same tree as a full scan would."""
+    def __init__(self, cell_size: int = 50):
+        self.cell_size = cell_size
+        self.grid: dict = {}
+        self.next_index = 0
+    
+    def build(self, trees: List[Tree]):
+        self.grid.clear()
+        self.next_index = 0
+        for tree in trees:
+            if tree.alive:
+                self.add(tree)
+    
+    def add(self, tree: Tree):
+        key = (int(tree.x // self.cell_size), int(tree.y // self.cell_size))
+        cell = self.grid.get(key)
+        if cell is None:
+            cell = self.grid[key] = []
+        cell.append((self.next_index, tree))
+        self.next_index += 1
+    
+    def query(self, x: float, y: float, radius: float) -> List[Tree]:
+        """Alive trees whose centre is within the square of half-size radius around (x, y)"""
+        cs = self.cell_size
+        grid = self.grid
+        found = []
+        for kx in range(int((x - radius) // cs), int((x + radius) // cs) + 1):
+            for ky in range(int((y - radius) // cs), int((y + radius) // cs) + 1):
+                cell = grid.get((kx, ky))
+                if cell:
+                    found.extend(cell)
+        if len(found) > 1:
+            found.sort(key=lambda pair: pair[0])
+        return [tree for _, tree in found if tree.alive]
 
 class Game:
     def __init__(self):
@@ -1591,6 +1663,7 @@ class Game:
         
         # Spatial grid for optimization
         self.spatial_grid = SpatialGrid(cell_size=100)
+        self.spatial_grid.tree_grid = TreeGrid()
         
         # Alpha predator spawning
         self.alpha_spawn_timer = 0
@@ -1629,6 +1702,9 @@ class Game:
         self.max_history_length = 10000  # Keep last 10000 data points (effectively unlimited)
         self.population_update_interval = 10  # Update every 10 frames
         self.population_update_counter = 0
+        self.population_history_version = 0  # Bumped on every history change; keys the graph cache
+        self.graph_cache = None
+        self.graph_cache_key = None
         
         # Graph resizing
         self.graph_width = 300  # Current graph width (adjustable)
@@ -1682,8 +1758,25 @@ class Game:
         self.rtx_gpu_usage = 0.0  # GPU usage percentage
         self.rtx_check_counter = 0
         
-        # Detect NVIDIA RTX GPU and get usage
-        self.rtx_active, self.rtx_gpu_usage = self.detect_nvidia_rtx()
+        # Detect NVIDIA RTX GPU and get usage in the background - nvidia-smi takes
+        # long enough to freeze the game if it runs on the main thread
+        self.rtx_check_running = False
+        self.start_rtx_check()
+    
+    def start_rtx_check(self):
+        """Run detect_nvidia_rtx on a background thread; results land on self when done"""
+        if self.rtx_check_running:
+            return
+        self.rtx_check_running = True
+        import threading
+        
+        def worker():
+            try:
+                self.rtx_active, self.rtx_gpu_usage = self.detect_nvidia_rtx()
+            finally:
+                self.rtx_check_running = False
+        
+        threading.Thread(target=worker, daemon=True).start()
     
     def detect_nvidia_rtx(self) -> tuple[bool, float]:
         """Detect if NVIDIA RTX GPU is being used and return (is_active, gpu_usage_percent)"""
@@ -1840,6 +1933,7 @@ class Game:
             segment.y1 *= scale_y
             segment.x2 *= scale_x
             segment.y2 *= scale_y
+            segment.update_geometry()
             # Recalculate flow direction
             dx = segment.x2 - segment.x1
             dy = segment.y2 - segment.y1
@@ -2156,11 +2250,14 @@ class Game:
         self.update_counter += 1
         
         for _ in range(self.speed_multiplier):
+            tree_grid = self.spatial_grid.tree_grid
+            tree_grid.build(self.trees)
+            
             # Update seeds first (they can fertilize trees)
             for seed in self.seeds:
                 if seed.alive:
                     was_alive = seed.alive
-                    seed.update(self.trees)
+                    seed.update(tree_grid.query(seed.x, seed.y, seed.fertilization_radius))
                     if not seed.alive and was_alive:
                         if hasattr(seed, 'fertilized') and seed.fertilized:
                             self.stats['seeds_fertilized'] += 1
@@ -2191,6 +2288,7 @@ class Game:
                         
                         if can_place:
                             self.trees.append(new_tree)
+                            tree_grid.add(new_tree)
                             new_tree.tracked_from_seed = True
                             seed.alive = False  # Remove seed
                             self.stats['trees_planted'] += 1
@@ -2344,6 +2442,46 @@ class Game:
         # Keep only last N entries
         if len(self.population_history) > self.max_history_length:
             self.population_history.pop(0)
+        self.population_history_version += 1
+    
+    def render_population_bars(self, width: int, height: int) -> pygame.Surface:
+        """Render the stacked population bars for the graph area onto a surface"""
+        surface = pygame.Surface((max(1, width), max(1, height)))
+        surface.fill((240, 240, 240))
+        num_points = len(self.population_history)
+        if num_points < 2 or width <= 0:
+            return surface
+        
+        # Show ALL history - dynamically compress bars as more data accumulates
+        bar_width = max(0.1, width / num_points)  # Can be fractional for many points
+        bar_w = max(1, int(bar_width))  # At least 1 pixel wide
+        
+        # When several points land on the same pixel column, the last one drawn covers the rest,
+        # so draw only that one
+        columns = {}
+        for i in range(num_points):
+            columns[int(i * bar_width)] = i
+        
+        segments = (
+            ('tree', DARK_GREEN),
+            ('herbivore', GREEN),
+            ('tree_eater', ORANGE),
+            ('carnivore', RED),
+            ('decomposer', PURPLE),
+            ('alpha', (139, 0, 0)),
+        )
+        fill = surface.fill
+        for x, i in columns.items():
+            data = self.population_history[i]
+            current_y = height
+            # Draw stacked segments (bottom to top)
+            for key, color in segments:
+                value = data.get(key, 0)
+                if value > 0:
+                    seg_h = max(1, int((value / 100) * height))
+                    fill(color, (x, current_y - seg_h, bar_w, seg_h))
+                    current_y -= seg_h
+        return surface
     
     def draw_population_graph(self):
         """Draw a stacked bar chart showing population percentages over time"""
@@ -2376,61 +2514,13 @@ class Game:
         graph_area_width = self.graph_width - 20  # Leave space for resize handle
         graph_area_height = graph_height - 30
         
-        # Draw each data point as a vertical stacked bar
-        # Show ALL history - dynamically compress bars as more data accumulates
-        num_points = len(self.population_history)
-        if num_points > 1:
-            # Calculate bar width to fit all data points
-            bar_width = max(0.1, graph_area_width / num_points)  # Can be fractional for many points
-            
-            for i, data in enumerate(self.population_history):
-                x = graph_area_x + i * bar_width
-                y_bottom = int(graph_area_y + graph_area_height)
-                current_y = y_bottom
-                bar_w = max(1, int(bar_width))  # At least 1 pixel wide
-                
-                # Draw stacked segments (bottom to top)
-                # Trees at the bottom (dark green)
-                if data.get('tree', 0) > 0:
-                    height = max(1, int((data['tree'] / 100) * graph_area_height))
-                    pygame.draw.rect(self.screen, DARK_GREEN,
-                                   (int(x), current_y - height, bar_w, height))
-                    current_y -= height
-                
-                # Herbivores (green)
-                if data['herbivore'] > 0:
-                    height = max(1, int((data['herbivore'] / 100) * graph_area_height))
-                    pygame.draw.rect(self.screen, GREEN,
-                                   (int(x), current_y - height, bar_w, height))
-                    current_y -= height
-                
-                # Tree eaters (orange)
-                if data['tree_eater'] > 0:
-                    height = max(1, int((data['tree_eater'] / 100) * graph_area_height))
-                    pygame.draw.rect(self.screen, ORANGE,
-                                   (int(x), current_y - height, bar_w, height))
-                    current_y -= height
-                
-                # Carnivores (red)
-                if data['carnivore'] > 0:
-                    height = max(1, int((data['carnivore'] / 100) * graph_area_height))
-                    pygame.draw.rect(self.screen, RED,
-                                   (int(x), current_y - height, bar_w, height))
-                    current_y -= height
-                
-                # Decomposers (purple)
-                if data['decomposer'] > 0:
-                    height = max(1, int((data['decomposer'] / 100) * graph_area_height))
-                    pygame.draw.rect(self.screen, PURPLE,
-                                   (int(x), current_y - height, bar_w, height))
-                    current_y -= height
-                
-                # Alpha predators (dark red)
-                if data['alpha'] > 0:
-                    height = max(1, int((data['alpha'] / 100) * graph_area_height))
-                    pygame.draw.rect(self.screen, (139, 0, 0),
-                                   (int(x), current_y - height, bar_w, height))
-                    current_y -= height
+        # Bars are drawn onto a cached surface and only redrawn when the history changes.
+        # Drawing every point every frame made the game slower the longer it ran.
+        cache_key = (self.population_history_version, graph_area_width, graph_area_height)
+        if self.graph_cache_key != cache_key:
+            self.graph_cache = self.render_population_bars(graph_area_width, graph_area_height)
+            self.graph_cache_key = cache_key
+        self.screen.blit(self.graph_cache, (graph_area_x, graph_area_y))
         
         # Draw resize handle (grip pattern on the right edge) - full height for easier clicking
         resize_handle_x = graph_x + self.graph_width - 15
@@ -2555,7 +2645,7 @@ class Game:
             self.rtx_check_counter = 0
         self.rtx_check_counter += 1
         if self.rtx_check_counter > 300:  # Re-check every 5 seconds at 60 FPS
-            self.rtx_active, self.rtx_gpu_usage = self.detect_nvidia_rtx()
+            self.start_rtx_check()
             self.rtx_check_counter = 0
         
         # Only show RTX ON if GPU usage is 30% or higher
